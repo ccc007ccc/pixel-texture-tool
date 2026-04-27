@@ -17,6 +17,8 @@ export type SamplingArea = {
 
 export type SampleAlgorithmId = 'anchor-point' | 'multi-point-average' | 'cell-average'
 
+export type AutoSamplingAlgorithmId = 'feature-anchor' | 'multi-point-default' | 'cell-average'
+
 export type CellSampleConfig = {
   algorithmId: SampleAlgorithmId
   anchor: SampleAnchor
@@ -56,6 +58,13 @@ export type CellInfo = {
   samplePoints: SamplePoint[]
   region: SampleRegionInfo
   isManualColor: boolean
+}
+
+export type AutoCellResolution = {
+  anchor: SampleAnchor
+  score: number
+  sampleX: number
+  sampleY: number
 }
 
 export type SamplerSnapshot = {

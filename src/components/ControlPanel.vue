@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type {
+  AutoSamplingAlgorithmId,
   CellInfo,
   SampleAlgorithmId,
   SampleAnchor,
@@ -21,6 +22,7 @@ const props = defineProps<{
   selectedAnchor: SampleAnchor | null
   selectedInfo: CellInfo | null
   selectedAlgorithm: SampleAlgorithmId
+  autoAlgorithm: AutoSamplingAlgorithmId
   selectedSamplePoints: SamplePoint[]
   selectedSampleRegion: SampleRegionInfo | null
   samplingArea: SamplingArea
@@ -41,6 +43,8 @@ const emit = defineEmits<{
   setSelectedAnchorX: [value: number]
   setSelectedAnchorY: [value: number]
   setSelectedAlgorithm: [value: SampleAlgorithmId]
+  setAutoAlgorithm: [value: AutoSamplingAlgorithmId]
+  autoSampleAllCells: []
   updateSamplingArea: [value: SamplingArea]
   resetSamplingArea: []
   addSelectedSamplePoint: []
@@ -88,6 +92,12 @@ function sectionToggleLabel(open: boolean) {
 const algorithmLabels: Record<SampleAlgorithmId, string> = {
   'anchor-point': '单点采样',
   'multi-point-average': '多点平均',
+  'cell-average': '整格平均',
+}
+
+const autoAlgorithmLabels: Record<AutoSamplingAlgorithmId, string> = {
+  'feature-anchor': '特征点单点',
+  'multi-point-default': '默认四点平均',
   'cell-average': '整格平均',
 }
 
@@ -149,6 +159,14 @@ function updatePoint(index: number, patch: Partial<SamplePoint>) {
             <span>锁定原图比例</span>
           </label>
           <label>
+            自动采样算法
+            <select name="auto-algorithm" :value="autoAlgorithm" @change="emit('setAutoAlgorithm', ($event.target as HTMLSelectElement).value as AutoSamplingAlgorithmId)">
+              <option value="feature-anchor">{{ autoAlgorithmLabels['feature-anchor'] }}</option>
+              <option value="multi-point-default">{{ autoAlgorithmLabels['multi-point-default'] }}</option>
+              <option value="cell-average">{{ autoAlgorithmLabels['cell-average'] }}</option>
+            </select>
+          </label>
+          <label>
             结果放大倍数
             <input name="preview-scale" :value="previewScale" type="number" min="4" max="32" @input="emit('setPreviewScale', Number(($event.target as HTMLInputElement).value))" />
           </label>
@@ -168,6 +186,7 @@ function updatePoint(index: number, patch: Partial<SamplePoint>) {
             <input name="show-sample-points" :checked="showSamplePoints" type="checkbox" @change="emit('setShowSamplePoints', ($event.target as HTMLInputElement).checked)" />
             <span>显示采样点</span>
           </label>
+          <button type="button" class="secondary-button full-span" :disabled="!source" @click="emit('autoSampleAllCells')">自动采样所有格</button>
         </div>
       </Transition>
     </div>

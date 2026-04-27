@@ -1,4 +1,6 @@
 import type {
+  AutoCellResolution,
+  AutoSamplingAlgorithmId,
   CellInfo,
   CellSampleConfig,
   SampleAlgorithmId,
@@ -39,6 +41,14 @@ function createCellConfigGrid(width: number, height: number) {
   return Array.from({ length: height }, () => Array.from({ length: width }, () => createCellConfig()))
 }
 
+function createAutoResolutionGrid(width: number, height: number) {
+  return Array.from({ length: height }, () => Array.from<AutoCellResolution | null>({ length: width }).fill(null))
+}
+
+function createRenderedCellInfoGrid(width: number, height: number) {
+  return Array.from({ length: height }, () => Array.from<CellInfo | null>({ length: width }).fill(null))
+}
+
 function cloneCellConfigGrid(configs: CellSampleConfig[][]) {
   return configs.map((row) =>
     row.map((config) => ({
@@ -50,8 +60,8 @@ function cloneCellConfigGrid(configs: CellSampleConfig[][]) {
   )
 }
 
-function cloneAnchorGrid(configs: CellSampleConfig[][]) {
-  return configs.map((row) => row.map((config) => ({ ...config.anchor })))
+function cloneRenderedCellInfoGrid(configs: (CellInfo | null)[][]) {
+  return configs.map((row) => row.slice())
 }
 
 function rgbaToColor(rgba: [number, number, number, number]) {
@@ -106,6 +116,13 @@ export function usePixelSampler() {
   let samplingArea: SamplingArea = { x: 0, y: 0, width: 1, height: 1 }
   let outputWidth = 32
   let outputHeight = 32
+  let autoAnchorCache: (AutoCellResolution | null)[][] = []
+  let autoCacheDirty = true
+  let renderedCellInfos: (CellInfo | null)[][] = []
+
+  function markAutoCacheDirty() {
+    autoCacheDirty = true
+  }
 
   function clampSamplingArea(area: SamplingArea): SamplingArea {
     const width = Math.max(1, Math.min(Math.round(area.width || 1), sourceCanvas.width || 1))
@@ -120,10 +137,12 @@ export function usePixelSampler() {
 
   function setSamplingArea(area: SamplingArea) {
     samplingArea = clampSamplingArea(area)
+    markAutoCacheDirty()
   }
 
   function resetSamplingArea() {
     samplingArea = { x: 0, y: 0, width: Math.max(1, sourceCanvas.width), height: Math.max(1, sourceCanvas.height) }
+    markAutoCacheDirty()
   }
 
   function setImage(image: HTMLImageElement) {
@@ -133,6 +152,7 @@ export function usePixelSampler() {
     sourceCtx.drawImage(image, 0, 0)
     sourceImageData = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height)
     resetSamplingArea()
+    markAutoCacheDirty()
   }
 
   function resizeGrid(width: number, height: number) {
@@ -154,6 +174,7 @@ export function usePixelSampler() {
     cellConfigs = next
     outputWidth = width
     outputHeight = height
+    markAutoCacheDirty()
   }
 
   function ensureGrid(width: number, height: number) {
@@ -260,6 +281,7 @@ export function usePixelSampler() {
     config.algorithmId = 'anchor-point'
     config.anchor = { x: 0.5, y: 0.5 }
     config.samplePoints = createDefaultSamplePoints()
+    config.manualColor = null
   }
 
   function resetAllCellConfigs() {
@@ -274,16 +296,7 @@ export function usePixelSampler() {
     cellConfigs = cloneCellConfigGrid(nextConfigs)
     outputHeight = cellConfigs.length
     outputWidth = cellConfigs[0]?.length ?? 0
-  }
-
-  function replaceAnchors(nextAnchors: SampleAnchor[][]) {
-    const nextConfigs = createCellConfigGrid(nextAnchors[0]?.length ?? 0, nextAnchors.length)
-    for (let y = 0; y < nextAnchors.length; y += 1) {
-      for (let x = 0; x < (nextAnchors[y]?.length ?? 0); x += 1) {
-        nextConfigs[y][x].anchor = { ...nextAnchors[y][x] }
-      }
-    }
-    replaceCellConfigs(nextConfigs)
+    markAutoCacheDirty()
   }
 
   function readPixel(pixelX: number, pixelY: number) {
@@ -330,10 +343,130 @@ export function usePixelSampler() {
     }
   }
 
-  function sampleAnchorPoint(cellX: number, cellY: number, config: CellSampleConfig): CellInfo {
-    const mappedPoint = mapPointToSource(cellX, cellY, config.anchor)
-    const rgba = readPixel(mappedPoint.x, mappedPoint.y)
-    const samplePoints = [mappedPoint]
+  function getAutoAnchorCandidates(): SampleAnchor[] {
+    return [
+      { x: 0.5, y: 0.5 },
+      { x: 0.2, y: 0.2 },
+      { x: 0.5, y: 0.2 },
+      { x: 0.8, y: 0.2 },
+      { x: 0.2, y: 0.5 },
+      { x: 0.8, y: 0.5 },
+      { x: 0.2, y: 0.8 },
+      { x: 0.5, y: 0.8 },
+      { x: 0.8, y: 0.8 },
+    ]
+  }
+
+  function scorePixelContrast(base: [number, number, number, number], target: [number, number, number, number]) {
+    return Math.abs(base[0] - target[0]) + Math.abs(base[1] - target[1]) + Math.abs(base[2] - target[2])
+  }
+
+  function scoreAnchorContrast(cellX: number, cellY: number, anchor: SampleAnchor) {
+    const mappedPoint = mapPointToSource(cellX, cellY, anchor)
+    const { startX, startY, endX, endY } = resolveCellBounds(cellX, cellY)
+    const centerX = clamp(Math.round(mappedPoint.x), startX, endX)
+    const centerY = clamp(Math.round(mappedPoint.y), startY, endY)
+    const center = readPixel(centerX, centerY)
+    const left = readPixel(clamp(centerX - 1, startX, endX), centerY)
+    const right = readPixel(clamp(centerX + 1, startX, endX), centerY)
+    const top = readPixel(centerX, clamp(centerY - 1, startY, endY))
+    const bottom = readPixel(centerX, clamp(centerY + 1, startY, endY))
+    return (
+      scorePixelContrast(center, left) +
+      scorePixelContrast(center, right) +
+      scorePixelContrast(center, top) +
+      scorePixelContrast(center, bottom) +
+      scorePixelContrast(left, right) * 0.35 +
+      scorePixelContrast(top, bottom) * 0.35
+    )
+  }
+
+  function resolveAutoCellAnchor(cellX: number, cellY: number) {
+    let bestAnchor = getAutoAnchorCandidates()[0]
+    let bestScore = Number.NEGATIVE_INFINITY
+    let bestMappedPoint = mapPointToSource(cellX, cellY, bestAnchor)
+
+    for (const candidate of getAutoAnchorCandidates()) {
+      const score = scoreAnchorContrast(cellX, cellY, candidate)
+      if (score > bestScore) {
+        bestScore = score
+        bestAnchor = candidate
+        bestMappedPoint = mapPointToSource(cellX, cellY, candidate)
+      }
+    }
+
+    return {
+      anchor: { ...bestAnchor },
+      score: bestScore,
+      sampleX: bestMappedPoint.x,
+      sampleY: bestMappedPoint.y,
+    } satisfies AutoCellResolution
+  }
+
+  function ensureAutoAnchorCache() {
+    if (!autoCacheDirty && autoAnchorCache.length === outputHeight && (autoAnchorCache[0]?.length ?? 0) === outputWidth) {
+      return
+    }
+
+    autoAnchorCache = createAutoResolutionGrid(outputWidth, outputHeight)
+    for (let y = 0; y < outputHeight; y += 1) {
+      for (let x = 0; x < outputWidth; x += 1) {
+        autoAnchorCache[y][x] = resolveAutoCellAnchor(x, y)
+      }
+    }
+    autoCacheDirty = false
+  }
+
+  function applyAutoSamplingToAllCells(algorithm: AutoSamplingAlgorithmId) {
+    if (!sourceImageData) {
+      return
+    }
+
+    ensureGrid(outputWidth, outputHeight)
+    if (algorithm === 'feature-anchor') {
+      ensureAutoAnchorCache()
+    }
+
+    const nextConfigs = cloneCellConfigGrid(cellConfigs)
+    for (let y = 0; y < outputHeight; y += 1) {
+      for (let x = 0; x < outputWidth; x += 1) {
+        const config = nextConfigs[y][x]
+        config.manualColor = null
+
+        if (algorithm === 'feature-anchor') {
+          const resolution = autoAnchorCache[y]?.[x] ?? resolveAutoCellAnchor(x, y)
+          config.algorithmId = 'anchor-point'
+          config.anchor = { ...resolution.anchor }
+          continue
+        }
+
+        if (algorithm === 'multi-point-default') {
+          config.algorithmId = 'multi-point-average'
+          config.samplePoints = createDefaultSamplePoints()
+          continue
+        }
+
+        config.algorithmId = 'cell-average'
+      }
+    }
+
+    replaceCellConfigs(nextConfigs)
+  }
+
+  function buildAnchorSampleInfo(
+    cellX: number,
+    cellY: number,
+    anchor: SampleAnchor,
+    algorithmId: SampleAlgorithmId,
+    options?: {
+      rgba?: [number, number, number, number]
+      isManualColor?: boolean
+      samplePoints?: SamplePoint[]
+    },
+  ): CellInfo {
+    const mappedPoint = mapPointToSource(cellX, cellY, anchor)
+    const rgba = options?.rgba ?? readPixel(mappedPoint.x, mappedPoint.y)
+    const samplePoints = options?.samplePoints ?? [mappedPoint]
     return {
       color: rgbaToColor(rgba),
       hex: rgbaToHex(rgba),
@@ -342,11 +475,15 @@ export function usePixelSampler() {
       sampleY: mappedPoint.y,
       displaySampleX: mappedPoint.x,
       displaySampleY: mappedPoint.y,
-      algorithmId: config.algorithmId,
+      algorithmId,
       samplePoints,
-      region: buildSampleRegionInfo(cellX, cellY, config.algorithmId, samplePoints),
-      isManualColor: false,
+      region: buildSampleRegionInfo(cellX, cellY, algorithmId, samplePoints),
+      isManualColor: options?.isManualColor ?? false,
     }
+  }
+
+  function sampleAnchorPoint(cellX: number, cellY: number, config: CellSampleConfig): CellInfo {
+    return buildAnchorSampleInfo(cellX, cellY, config.anchor, config.algorithmId)
   }
 
   function sampleMultiPointAverage(cellX: number, cellY: number, config: CellSampleConfig): CellInfo {
@@ -446,10 +583,12 @@ export function usePixelSampler() {
     resultCanvas.width = width
     resultCanvas.height = height
     const imageData = resultCtx.createImageData(width, height)
+    renderedCellInfos = createRenderedCellInfoGrid(width, height)
 
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
         const info = sampleCell(x, y)
+        renderedCellInfos[y][x] = info
         if (!info) {
           continue
         }
@@ -466,7 +605,7 @@ export function usePixelSampler() {
   }
 
   return {
-    cloneAnchors: () => cloneAnchorGrid(cellConfigs),
+    applyAutoSamplingToAllCells,
     cloneCellConfigs: () => cloneCellConfigGrid(cellConfigs),
     ensureGrid,
     getAnchor,
@@ -474,12 +613,12 @@ export function usePixelSampler() {
     getCellConfig,
     getCellSamplePoints,
     getOutputSize: () => ({ width: outputWidth, height: outputHeight }),
+    getRenderedCellInfos: () => cloneRenderedCellInfoGrid(renderedCellInfos),
     getSamplingArea: () => ({ ...samplingArea }),
     getResultCanvas: () => resultCanvas,
     getSampleRegion,
     getSourceCanvas: () => sourceCanvas,
     render,
-    replaceAnchors,
     replaceCellConfigs,
     resetSamplingArea,
     resetAnchor,

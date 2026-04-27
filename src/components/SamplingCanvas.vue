@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { PropType } from 'vue'
 
-import type { CellSampleConfig, SampleAnchor, SamplingArea, SelectedCell } from '../types'
+import type { CellInfo, CellSampleConfig, SampleAnchor, SamplingArea, SelectedCell } from '../types'
 
 const props = defineProps({
   sourceCanvas: {
@@ -11,6 +11,10 @@ const props = defineProps({
   },
   cellConfigs: {
     type: Array as PropType<CellSampleConfig[][]>,
+    default: () => [],
+  },
+  displayCellInfos: {
+    type: Array as PropType<(CellInfo | null)[][]>,
     default: () => [],
   },
   outputWidth: {
@@ -267,18 +271,20 @@ function draw() {
   if (props.showSamplePoints) {
     for (let y = 0; y < props.outputHeight; y += 1) {
       for (let x = 0; x < props.outputWidth; x += 1) {
+        const info = props.displayCellInfos[y]?.[x]
         const config = props.cellConfigs[y]?.[x]
-        if (!config) {
+        if (!info && !config) {
           continue
         }
         const selected = isSelectedCell(x, y)
-        if (config.algorithmId === 'anchor-point') {
-          drawPoint(context, areaRect.x + (x + config.anchor.x) * cellWidth, areaRect.y + (y + config.anchor.y) * cellHeight, selected)
-        } else if (config.algorithmId === 'multi-point-average' && selected) {
-          for (const point of config.samplePoints) {
+        if (info?.algorithmId === 'anchor-point') {
+          const anchor = config?.anchor ?? { x: 0.5, y: 0.5 }
+          drawPoint(context, areaRect.x + (x + anchor.x) * cellWidth, areaRect.y + (y + anchor.y) * cellHeight, selected)
+        } else if (info?.algorithmId === 'multi-point-average' && selected) {
+          for (const point of config?.samplePoints ?? []) {
             drawPoint(context, areaRect.x + (x + point.x) * cellWidth, areaRect.y + (y + point.y) * cellHeight, true)
           }
-        } else if (config.algorithmId === 'cell-average' && selected) {
+        } else if (info?.algorithmId === 'cell-average' && selected) {
           context.fillStyle = 'rgba(125, 211, 252, 0.12)'
           context.fillRect(areaRect.x + x * cellWidth, areaRect.y + y * cellHeight, cellWidth, cellHeight)
         }

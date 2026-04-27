@@ -8,6 +8,7 @@ import SamplingCanvas from './components/SamplingCanvas.vue'
 import SelectedSamplePreview from './components/SelectedSamplePreview.vue'
 import { usePixelSampler } from './composables/usePixelSampler'
 import type {
+  AutoSamplingAlgorithmId,
   CellInfo,
   CellSampleConfig,
   SampleAlgorithmId,
@@ -34,6 +35,7 @@ const renderKey = ref(0)
 const showGrid = ref(true)
 const showSamplePoints = ref(true)
 const focusViewsOnly = ref(false)
+const selectedAutoAlgorithm = ref<AutoSamplingAlgorithmId>('feature-anchor')
 const message = ref('')
 const errorMessage = ref('')
 const cellConfigs = ref<CellSampleConfig[][]>([])
@@ -82,20 +84,20 @@ const selectedConfig = computed(() => {
 const selectedAlgorithm = computed<SampleAlgorithmId>(() => selectedConfig.value?.algorithmId ?? 'anchor-point')
 const selectedSamplePoints = computed(() => selectedConfig.value?.samplePoints ?? [])
 
-const selectedAnchor = computed(() => {
-  renderKey.value
-  if (!selectedCell.value) {
-    return null
-  }
-  return selectedConfig.value?.anchor ?? sampler.getAnchor(selectedCell.value)
-})
-
 const selectedInfo = computed<CellInfo | null>(() => {
   renderKey.value
   if (!selectedCell.value) {
     return null
   }
   return sampler.sampleCell(selectedCell.value.x, selectedCell.value.y)
+})
+
+const selectedAnchor = computed(() => {
+  renderKey.value
+  if (!selectedCell.value) {
+    return null
+  }
+  return selectedConfig.value?.anchor ?? sampler.getAnchor(selectedCell.value)
 })
 
 const displayedSelectedInfo = computed<CellInfo | null>(() => {
@@ -122,7 +124,12 @@ const displayedSelectedInfo = computed<CellInfo | null>(() => {
 
 const selectedSampleRegion = computed<SampleRegionInfo | null>(() => {
   renderKey.value
-  return sampler.getSampleRegion(selectedCell.value)
+  return displayedSelectedInfo.value?.region ?? null
+})
+
+const displayCellInfos = computed(() => {
+  renderKey.value
+  return sampler.getRenderedCellInfos()
 })
 
 function clearStatus() {
@@ -261,7 +268,6 @@ function previewSelectedAnchor(point: SampleAnchor) {
   scheduleRender()
 }
 
-
 function resetSelectedAnchor() {
   if (!selectedCell.value || selectedAlgorithm.value !== 'anchor-point') {
     return
@@ -334,6 +340,18 @@ function setSelectedAlgorithm(algorithmId: SampleAlgorithmId) {
   pushUndoSnapshot()
   sampler.setCellAlgorithm(selectedCell.value, algorithmId)
   syncRender()
+}
+
+function autoSampleAllCells() {
+  if (!source.value) {
+    errorMessage.value = '请先导入图片。'
+    return
+  }
+  clearStatus()
+  pushUndoSnapshot()
+  sampler.applyAutoSamplingToAllCells(selectedAutoAlgorithm.value)
+  syncRender()
+  message.value = '已按所选算法生成全部格采样配置，可继续逐格微调。'
 }
 
 function addSelectedSamplePointAt(point: SamplePoint) {
@@ -560,8 +578,9 @@ onBeforeUnmount(() => {
             :preview-scale="previewScale"
             :selected-cell="selectedCell"
             :selected-anchor="selectedAnchor"
-            :selected-info="selectedInfo"
+            :selected-info="displayedSelectedInfo"
             :selected-algorithm="selectedAlgorithm"
+            :auto-algorithm="selectedAutoAlgorithm"
             :selected-sample-points="selectedSamplePoints"
             :selected-sample-region="selectedSampleRegion"
             :sampling-area="samplingArea"
@@ -579,6 +598,8 @@ onBeforeUnmount(() => {
             @set-selected-anchor-x="commitSelectedAnchor({ x: $event })"
             @set-selected-anchor-y="commitSelectedAnchor({ y: $event })"
             @set-selected-algorithm="setSelectedAlgorithm"
+            @set-auto-algorithm="selectedAutoAlgorithm = $event"
+            @auto-sample-all-cells="autoSampleAllCells"
             @update-sampling-area="updateSamplingArea"
             @reset-sampling-area="resetSamplingArea"
             @add-selected-sample-point="addSelectedSamplePoint"
@@ -599,6 +620,7 @@ onBeforeUnmount(() => {
         <SamplingCanvas
           :source-canvas="source ? sampler.getSourceCanvas() : null"
           :cell-configs="cellConfigs"
+          :display-cell-infos="displayCellInfos"
           :output-width="outputWidth"
           :output-height="outputHeight"
           :selected-cell="selectedCell"
